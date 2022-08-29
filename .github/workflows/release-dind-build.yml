@@ -1,9 +1,12 @@
 name: release-dind-build
 
+# on:
+#   release:
+#     branches: [main, V5.*, fixbug*, Develop*]
+#   workflow_dispatch:
 on:
-  release:
-    branches: [main, V5.*, fixbug*, Develop*]
-  workflow_dispatch:
+  push:
+    branches: [optimize-script]
 
 jobs:
   build:
@@ -25,10 +28,11 @@ jobs:
       - name: Build the Docker image
         env:
           TRAVIS_PULL_REQUEST: false
-          BUILD_IMAGE_NAMESPACE: ${{ secrets.BUILD_IMAGE_NAMESPACE }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOMESTIC_NAMESPACE: ${{ secrets.DOMESTIC_NAMESPACE }}
           DOMESTIC_DOCKER_PASSWORD: ${{ secrets.DOMESTIC_DOCKER_PASSWORD }}
           DOMESTIC_DOCKER_USERNAME: ${{ secrets.DOMESTIC_DOCKER_USERNAME }}
-        run: VERSION=v5.5.0-dind ./release.sh allinone
+          VERSION: ${{ secrets.VERSION }}
+          OPERATOR_BRANCH: release-2.1
+          OPERATOR_ORG: zzzhangqi
+        run: ./release.sh dind

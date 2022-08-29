@@ -4,6 +4,12 @@ IMAGE_NAMESPACE=${IMAGE_NAMESPACE:-rainbond}
 DOMESTIC_BASE_NAME=${DOMESTIC_BASE_NAME:-'registry.cn-hangzhou.aliyuncs.com'}
 DOMESTIC_NAMESPACE=${DOMESTIC_NAMESPACE:-'goodrain'}
 ARCH=${BUILD_ARCH:-'amd64'}
+TRAVIS_PULL_REQUEST=${TRAVIS_PULL_REQUEST:-false}
+# rainbond operator org and branch
+OPERATOR_BRANCH=${OPERATOR_BRANCH:-${VERSION}}
+OPERATOR_ORG=${OPERATOR_ORG:-'goodrain'}
+# adaptor branch
+ADAPTOR_BRANCH=${ADAPTOR_BRANCH:-${VERSION}}
 
 if [ -z "$VERSION" ]; then
   if [ -z "$TRAVIS_TAG" ]; then
@@ -62,8 +68,14 @@ function release_dind() {
   buildTime=$(date +%F-%H)
   release_desc=${VERSION/-release}-${git_commit}-${buildTime}-allinone
   image_name="rainbond"
-  imageName=${IMAGE_DOMAIN}/${IMAGE_NAMESPACE}/${image_name}:${VERSION/-release}-dind-allinone
-  docker build --network=host --build-arg VERSION="${VERSION}" --build-arg DOMESTIC_NAMESPACE="${DOMESTIC_NAMESPACE}" --build-arg CLONE_URL="${CLONE_URL}" --build-arg IMAGE_NAMESPACE="${IMAGE_NAMESPACE}" --build-arg RELEASE_DESC="${release_desc}" --build-arg ARCH="${ARCH}" -t "${imageName}" -f Dockerfile.dind .
+  imageName=${IMAGE_DOMAIN}/qlucky/${image_name}:${VERSION/-release}-dind-allinone
+  docker build --network=host --build-arg VERSION="${VERSION}" --build-arg IMAGE_NAMESPACE="${IMAGE_NAMESPACE}" \
+    --build-arg RELEASE_DESC="${release_desc}" \
+    --build-arg ARCH="${ARCH}" \
+    --build-arg OPERATOR_BRANCH="${OPERATOR_BRANCH}" \
+    --build-arg OPERATOR_ORG="${OPERATOR_ORG}" \
+    --build-arg ADAPTOR_BRANCH="${ADAPTOR_BRANCH}" \
+    -t "${imageName}" -f Dockerfile.dind .
   if [ $? -ne 0 ]; then
     exit 1
   fi
@@ -72,12 +84,22 @@ function release_dind() {
       echo "$DOCKER_PASSWORD" | docker login ${IMAGE_DOMAIN} -u "$DOCKER_USERNAME" --password-stdin
       docker push "${imageName}"
     fi
-    if [ "${DOMESTIC_BASE_NAME}" ]; then
-      domestcName=${DOMESTIC_BASE_NAME}/${DOMESTIC_NAMESPACE}/rainbond:${VERSION/-release}-dind-allinone
+    if [ "${DOMESTIC_DOCKER_USERNAME}" ]; then
+      domestcName=${DOMESTIC_BASE_NAME}/${DOMESTIC_NAMESPACE}/rainbond:${VERSION}-dind-allinone
       docker tag ${imageName} ${domestcName}
       docker login -u "$DOMESTIC_DOCKER_USERNAME" -p "$DOMESTIC_DOCKER_PASSWORD" "${DOMESTIC_BASE_NAME}"
       docker push "${domestcName}"
     fi
+  fi
+}
+
+function build_dind_package () {
+  IMAGE_DOMAIN=${IMAGE_DOMAIN} \
+  IMAGE_NAMESPACE=${IMAGE_NAMESPACE} \
+  VERSION=${VERSION} \
+  ./build_dind_package.sh
+  if [ $? -ne 0 ]; then
+    exit 1
   fi
 }
 
@@ -86,6 +108,7 @@ allinone)
   release_allinone
   ;;
 dind)
+  build_dind_package
   release_dind
   ;;
 *)

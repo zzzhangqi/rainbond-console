@@ -3,25 +3,25 @@ ARG VERSION=V5.4-dev
 
 FROM golang:1.14-stretch as builder
 ARG VERSION=v5.7.1-release
-# ENV GOPROXY=https://goproxy.io
-ENV CGO_ENABLED=1
-ENV GOPATH=/go
-ARG DOMESTIC_NAMESPACE=goodrain
-ENV DOMESTIC_NAMESPACE=${DOMESTIC_NAMESPACE}
-RUN git clone -b ${VERSION} --depth=1 https://github.com/goodrain/cloud-adaptor /go/src/goodrain.com/cloud-adaptor
-WORKDIR /go/src/goodrain.com/cloud-adaptor/
 ARG LDFLAGS
-RUN go build -ldflags "$LDFLAGS" -o /cloud-adaptor $PWD/cmd/cloud-adaptor
+ARG ADAPTOR_BRANCH=v5.7.1-release
 
-ARG IMAGE_NAMESPACE=rainbond
-ARG VERSION=V5.4-dev
+ENV GOPROXY=https://goproxy.io \
+    CGO_ENABLED=1 \
+    GOPATH=/go
+
+RUN git clone -b ${ADAPTOR_BRANCH} --depth=1 https://github.com/goodrain/cloud-adaptor /go/src/goodrain.com/cloud-adaptor
+WORKDIR /go/src/goodrain.com/cloud-adaptor/
+
+RUN go build -ldflags "$LDFLAGS" -o /cloud-adaptor $PWD/cmd/cloud-adaptor
 
 FROM ${IMAGE_NAMESPACE}/rainbond-ui:${VERSION}
 ARG RELEASE_DESC=
 ARG ARCH=amd64
-ARG BRANCH=v2.3.0
+ARG OPERATOR_BRANCH=v2.3.0
+ARG OPERATOR_ORG=goodrain
+ARG VERSION
 
-LABEL author="zengqg@goodrain.com"
 RUN mkdir -p /app/ui /usr/share/zoneinfo/Asia/ && \
     mkdir -p /opt/rainbond/ && \
     mkdir -p /var/lib/k3s/server/manifests/metrics-server/rainbond && \
@@ -65,22 +65,19 @@ COPY --from=builder /go/src/goodrain.com/cloud-adaptor/chart /app/chart
 COPY --from=builder /cloud-adaptor /app/cloudadaptor
 ADD . /app/ui
 WORKDIR /app/ui
-ARG VERSION=V5.4-dev
-ARG DOMESTIC_NAMESPACE=goodrain
-ARG CLONE_URL=https://github.com/goodrain
+
 RUN set -eux; \
     if [ "${ARCH}" = "arm64" ]; then \
-        wget "https://pkg.rainbond.com/images-pkg/arm64/rainbond-v5.6.0.tar"; \
+        # wget "https://pkg.rainbond.com/images-pkg/arm64/rainbond-v5.6.0.tar"; \
         wget "https://pkg.rainbond.com/images-pkg/arm64/log"; \
     else \
-        wget "https://rainbond-pkg.oss-cn-shanghai.aliyuncs.com/images-pkg/rainbond-${VERSION}.tar"; \
+        # wget "https://rainbond-pkg.oss-cn-shanghai.aliyuncs.com/images-pkg/rainbond-${VERSION}.tar"; \
         wget "https://pkg.rainbond.com/images-pkg/log"; \
     fi && \
-    git clone -b ${BRANCH} --depth=1 ${CLONE_URL}/rainbond-operator.git /app/ui/rainbond-operator && \
-    chmod +x /app/ui/entrypoint.sh /app/ui/start.sh /app/ui/k3s.sh  /app/ui/init_rainbond.sh && \
+    git clone -b $OPERATOR_BRANCH --depth=1 https://github.com/$OPERATOR_ORG/rainbond-operator.git /app/ui/rainbond-operator && \
+    chmod +x /app/ui/entrypoint.sh /app/ui/entrypoint-dind.sh && \
     mv /app/ui/supervisord.conf /etc/supervisor/supervisord.conf && \
-    mv /app/ui/rainbond.conf /etc/supervisor/conf.d/rainbond.conf && \
-    mv /app/ui/dind.conf /etc/supervisor/conf.d/dind.conf.bak && \
+    mv /app/ui/dind.conf /etc/supervisor/conf.d/dind.conf && \
 	mv /app/ui/daemon.json /etc/docker/daemon.json && \
 	chmod +x /app/cloudadaptor && \
     mv /dist/index.html /app/ui/www/templates/index.html && \
@@ -98,26 +95,20 @@ RUN set -eux; \
     && rm -rf /tmp/* \
     && rm -rf /app/ui/www/static/www/weavescope
 
-ENV PORT 7070
-ENV IS_OPEN_API=true
-ENV RELEASE_DESC=${RELEASE_DESC}
-ENV HOME_DIR=/app
+ENV PORT 7070 \
+    IS_OPEN_API=true \
+    RELEASE_DESC=${RELEASE_DESC} \
+    HOME_DIR=/app
 # cloud adaptor
-ENV DB_PATH=/app/data/cloudadaptor
-ENV CHART_PATH=/app/chart
-ENV CONFIG_DIR=/app/data/cloudadaptor
-ENV HELM_PATH=/usr/local/bin/helm
-ENV MYSQL_DB=console
-ENV VERSION=${VERSION}
-ENV RAINBOND_VERSION=${VERSION}
-ENV OPERATOR_VERSION=${VERSION}
-ENV DOMESTIC_NAMESPACE=${DOMESTIC_NAMESPACE}
+ENV DB_PATH=/app/data/cloudadaptor \
+    CHART_PATH=/app/chart \
+    CONFIG_DIR=/app/data/cloudadaptor \
+    HELM_PATH=/usr/local/bin/helm \
+    MYSQL_DB=console \
+    VERSION=${VERSION} \
+    RAINBOND_VERSION=${VERSION} \
+    OPERATOR_VERSION=${VERSION}
 
-VOLUME /app/data
-VOLUME /app/logs
-VOLUME /root/.ssh
-VOLUME /opt/rainbond
-VOLUME /var/lib/docker
+VOLUME ["/app/data", "/app/logs", "/root/.ssh", "/opt/rainbond", "/var/lib/docker"]
 
-ENTRYPOINT [ "/app/ui/start.sh" ]
-CMD ["/usr/bin/supervisord","-c","/etc/supervisor/supervisord.conf"]
+CMD ["/usr/bin/supervisord"]
