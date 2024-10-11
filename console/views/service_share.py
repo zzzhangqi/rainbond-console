@@ -55,7 +55,7 @@ class ServiceShareRecordView(RegionTenantHeaderView):
             store_id = share_record.share_app_market_name
             scope = share_record.scope
             if scope != "goodrain" and not app_model_name:
-                app = rainbond_app_repo.get_rainbond_app_by_app_id(self.tenant.enterprise_id, share_record.app_id)
+                app = rainbond_app_repo.get_rainbond_app_by_app_id(share_record.app_id)
                 app_model_name = app.app_name if app else ""
                 app_version = rainbond_app_repo.get_rainbond_app_version_by_record_id(share_record.ID)
                 if app_version:
@@ -186,7 +186,7 @@ class ServiceShareRecordInfoView(RegionTenantHeaderView):
                 if market:
                     store_name = market.name
                     store_version = extend.get("version", store_version)
-            app = rainbond_app_repo.get_rainbond_app_by_app_id(self.tenant.enterprise_id, share_record.app_id)
+            app = rainbond_app_repo.get_rainbond_app_by_app_id(share_record.app_id)
             if app:
                 app_model_id = share_record.app_id
                 app_model_name = app.app_name
@@ -561,18 +561,6 @@ class ShareRecordView(RegionTenantHeaderView):
         result = general_message(
             200, "the current application is not Shared or Shared", "当前应用未分享或已分享", bean=share_record.to_dict())
         return Response(result, status=200)
-
-
-class ShareServicesListView(RegionTenantHeaderView):
-    def get(self, request, team_name, *args, **kwargs):
-        try:
-            share_services = share_repo.get_shared_apps_by_team(team_name)
-        except Exception as e:
-            logger.debug(e)
-            return Response(error_message(e.message), status=404)
-        data = list(map(share_service.get_shared_services_list, share_services))
-        rst = general_message(200, "get shared apps list complete", None, bean=data)
-        return Response(rst, status=200)
 
 
 class ServiceGroupSharedApps(RegionTenantHeaderView):

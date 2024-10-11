@@ -1327,7 +1327,7 @@ class HelmChart(TeamAPIView):
         chart_name = chart_info.data.get("chart_name")
         name = chart_name
         app_model_id = make_uuid3(repo_name + "/" + chart_name)
-        helm_center_app = rainbond_app_repo.get_rainbond_app_qs_by_key(self.enterprise.enterprise_id, app_model_id)
+        helm_center_app = rainbond_app_repo.get_rainbond_app_by_app_id(app_model_id)
         data = {"exist": True, "app_model_id": app_id}
         if not helm_center_app:
             center_app = {
@@ -1348,7 +1348,7 @@ class HelmChart(TeamAPIView):
         cvdata = helm_app_service.yaml_conversion(name, repo_name, chart_name, version, overrides_list, self.region_name,
                                                   self.team.tenant_name, self.team, self.enterprise.enterprise_id,
                                                   self.region.region_id)
-        helm_center_app = rainbond_app_repo.get_rainbond_app_qs_by_key(self.enterprise.enterprise_id, app_model_id)
+        helm_center_app = rainbond_app_repo.get_rainbond_app_by_app_id(app_model_id)
         chart = repo_name + "/" + chart_name
         helm_app_service.generate_template(cvdata, helm_center_app, version, self.team, chart, self.region_name,
                                            self.enterprise.enterprise_id, self.user.user_id, overrides_list, app_id)

@@ -213,6 +213,10 @@ class Tenants(BaseModel):
 
     class Meta:
         db_table = 'tenant_info'
+        indexes = [
+            models.Index(fields=['enterprise_id', 'is_active'], name='enterprise_id_and_active_IDX'),
+            models.Index(fields=['create_time'], name='create_time_IDX'),
+        ]
 
     tenant_id = models.CharField(max_length=33, unique=True, default=make_tenant_id, help_text="租户id")
     tenant_name = models.CharField(max_length=64, unique=True, help_text="租户名称")
@@ -271,6 +275,9 @@ class TenantServiceInfo(BaseModel):
     class Meta:
         db_table = 'tenant_service'
         unique_together = ('tenant_id', 'service_alias')
+        indexes = [
+            models.Index(fields=['service_alias'], name='service_alias_IDX'),
+        ]
 
     service_id = models.CharField(max_length=32, unique=True, help_text="组件id")
     tenant_id = models.CharField(max_length=32, help_text="租户id")
@@ -498,6 +505,9 @@ class TenantServiceAuth(BaseModel):
 class ServiceDomain(BaseModel):
     class Meta:
         db_table = 'service_domain'
+        indexes = [
+            models.Index(fields=['region_id', 'service_id'], name='region_and_service_id_IDX'),
+        ]
 
     http_rule_id = models.CharField(max_length=128, unique=True, help_text="http_rule_id")
     region_id = models.CharField(max_length=36, help_text="region id")
@@ -691,6 +701,9 @@ class ServiceGroup(BaseModel):
 
     class Meta:
         db_table = 'service_group'
+        indexes = [
+            models.Index(fields=['tenant_id'], name='tenant_id_idx'),
+        ]
 
     tenant_id = models.CharField(max_length=32, help_text="租户id")
     group_name = models.CharField(max_length=128, help_text="组名")

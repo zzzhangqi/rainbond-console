@@ -88,7 +88,10 @@ class RainbondCenterApp(BaseModel):
 
     class Meta:
         db_table = "rainbond_center_app"
-        unique_together = ('app_id', 'enterprise_id')
+        indexes = [
+            models.Index(fields=['scope', 'arch', 'is_version', 'create_team', 'app_name'], name='rainbond_center_app_filter_IDX'),
+            models.Index(fields=['update_time'], name='update_time_IDX'),
+        ]
 
     app_id = models.CharField(max_length=32, help_text="应用包")
     app_name = models.CharField(max_length=64, help_text="应用包名")
@@ -107,6 +110,7 @@ class RainbondCenterApp(BaseModel):
     is_official = models.BooleanField(default=False, help_text='是否官方认证')
     details = models.TextField(null=True, blank=True, help_text="应用详情")
     arch = models.CharField(max_length=32, help_text="架构")
+    is_version = models.BooleanField(default=False, help_text="是否存在版本")
 
 
 class RainbondCenterAppVersion(BaseModel):
@@ -114,6 +118,11 @@ class RainbondCenterAppVersion(BaseModel):
 
     class Meta:
         db_table = "rainbond_center_app_version"
+        indexes = [
+            models.Index(fields=['app_id', 'is_complete'], name='version_filter_IDX'),
+            models.Index(fields=['record_id'], name='record_id_IDX'),
+            models.Index(fields=['group_id', 'scope'], name='group_scope_IDX')
+        ]
 
     enterprise_id = models.CharField(max_length=32, default="public", help_text="企业ID")
     app_id = models.CharField(max_length=32, help_text="应用id")
@@ -384,7 +393,7 @@ class TeamGitlabInfo(BaseModel):
 class ServiceRecycleBin(BaseModel):
     class Meta:
         db_table = 'tenant_service_recycle_bin'
-        unique_together = ('tenant_id', 'service_alias')
+        unique_together = (('tenant_id'), ('service_alias'))
 
     service_id = models.CharField(max_length=32, unique=True, help_text="服务id")
     tenant_id = models.CharField(max_length=32, help_text="租户id")
@@ -1146,6 +1155,20 @@ class RKEClusterNode(BaseModel):
     node_role = models.CharField(max_length=64, help_text="node_role")
     node_ip = models.CharField(max_length=64, help_text="node_ip")
     is_server = models.BooleanField(help_text="是否是 server 节点")
+
+
+class AppGrayRelease(BaseModel):
+    class Meta:
+        db_table = "app_gray_release"
+
+    app_id = models.CharField(max_length=32)
+    entry_component_id = models.CharField(max_length=32, help_text="入口组件ID")
+    flow_entry_rule = models.TextField(max_length="灰度规则")
+    gray_strategy_type = CharField(max_length=32, help_text="灰度策略类型", default="batches")
+    gray_strategy = models.TextField(max_length="灰度策略")
+    entry_http_route = models.CharField(max_length=128, help_text="入口组件的HttpRoute")
+    status = models.BooleanField(default=False, help_text='是否开启灰度发布')
+    trace_type = models.CharField(max_length=32, help_text='traceID 类型')
 
 
 class K8sResource(BaseModel):

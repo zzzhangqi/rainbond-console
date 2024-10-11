@@ -70,123 +70,19 @@ class TeamArchView(RegionTenantHeaderView):
 
 class TeamOverView(RegionTenantHeaderView):
     def get(self, request, *args, **kwargs):
-        """
-        总览 团队信息
-        ---
-        parameters:
-            - name: team_name
-              description: 团队名
-              required: true
-              type: string
-              paramType: path
-        """
-        overview_detail = dict()
+        count_data = dict()
         users = team_services.get_team_users(self.team)
-        if users:
-            user_nums = len(users)
-            overview_detail["user_nums"] = user_nums
-            team_service_num = service_repo.get_team_service_num_by_team_id(
-                team_id=self.team.tenant_id, region_name=self.response_region)
-            source = common_services.get_current_region_used_resource(self.team, self.response_region)
-            team = team_services.get_team_by_team_id_and_eid(self.team.tenant_id, self.team.enterprise_id)
-            overview_detail["logo"] = team.logo
-            region = region_repo.get_region_by_region_name(self.response_region)
-            if not region:
-                overview_detail["region_health"] = False
-                return Response(general_message(200, "success", "查询成功", bean=overview_detail))
-
-            # 同步应用到集群
-            groups = group_repo.get_tenant_region_groups(self.team.tenant_id, region.region_name)
-            batch_create_app_body = []
-            region_app_ids = []
-            if groups:
-                app_ids = [group.ID for group in groups]
-                region_apps = region_app_repo.list_by_app_ids(region.region_name, app_ids)
-                app_id_rels = {rapp.app_id: rapp.region_app_id for rapp in region_apps}
-                for group in groups:
-                    if app_id_rels.get(group.ID):
-                        region_app_ids.append(app_id_rels[group.ID])
-                        continue
-                    create_app_body = dict()
-                    group_services = base_service.get_group_services_list(self.team.tenant_id, region.region_name, group.ID)
-                    service_ids = []
-                    if group_services:
-                        service_ids = [service["service_id"] for service in group_services]
-                    create_app_body["app_name"] = group.group_name
-                    create_app_body["console_app_id"] = group.ID
-                    create_app_body["service_ids"] = service_ids
-                    if group.k8s_app:
-                        create_app_body["k8s_app"] = group.k8s_app
-                    batch_create_app_body.append(create_app_body)
-
-            if len(batch_create_app_body) > 0:
-                try:
-                    body = {"apps_info": batch_create_app_body}
-                    applist = region_api.batch_create_application(region.region_name, self.tenant_name, body)
-                    app_list = []
-                    if applist:
-                        for app in applist:
-                            data = RegionApp(
-                                app_id=app["app_id"], region_app_id=app["region_app_id"], region_name=region.region_name)
-                            app_list.append(data)
-                            region_app_ids.append(app["region_app_id"])
-                    RegionApp.objects.bulk_create(app_list)
-                except Exception as e:
-                    logger.exception(e)
-
-            running_app_num = 0
-            try:
-                resp = region_api.list_app_statuses_by_app_ids(self.tenant_name, self.response_region,
-                                                               {"app_ids": region_app_ids})
-                app_statuses = resp.get("list", [])
-                for app_status in app_statuses:
-                    if app_status.get("status") == "RUNNING":
-                        running_app_num += 1
-            except Exception as e:
-                logger.exception(e)
-            team_app_num = len(groups)
-            overview_detail["team_app_num"] = team_app_num
-            overview_detail["team_service_num"] = team_service_num
-            overview_detail["eid"] = self.team.enterprise_id
-            overview_detail["team_id"] = self.team.tenant_id
-            overview_detail["team_service_memory_count"] = 0
-            overview_detail["team_service_total_disk"] = 0
-            overview_detail["team_service_total_cpu"] = 0
-            overview_detail["team_service_total_memory"] = 0
-            overview_detail["team_service_use_cpu"] = 0
-            overview_detail["cpu_usage"] = 0
-            overview_detail["memory_usage"] = 0
-            overview_detail["running_app_num"] = running_app_num
-            overview_detail["running_component_num"] = 0
-            overview_detail["team_alias"] = self.tenant.tenant_alias
-            overview_detail["region_id"] = self.region.region_id
-            if source:
-                try:
-                    overview_detail["region_health"] = True
-                    overview_detail["team_service_memory_count"] = int(source["memory"])
-                    overview_detail["team_service_total_disk"] = int(source["disk"])
-                    overview_detail["team_service_total_cpu"] = int(source["limit_cpu"])
-                    overview_detail["team_service_total_memory"] = int(source["limit_memory"])
-                    overview_detail["team_service_use_cpu"] = int(source["cpu"])
-                    overview_detail["running_component_num"] = int(source.get("service_running_num", 0))
-                    cpu_usage = 0
-                    memory_usage = 0
-                    if int(source["limit_cpu"]) != 0:
-                        cpu_usage = float(int(source["cpu"])) / float(int(source["limit_cpu"])) * 100
-                    if int(source["limit_memory"]) != 0:
-                        memory_usage = float(int(source["memory"])) / float(int(source["limit_memory"])) * 100
-                    overview_detail["cpu_usage"] = round(cpu_usage, 2)
-                    overview_detail["memory_usage"] = round(memory_usage, 2)
-                except Exception as e:
-                    logger.debug(source)
-                    logger.exception(e)
-            else:
-                overview_detail["region_health"] = False
-            return Response(general_message(200, "success", "查询成功", bean=overview_detail))
-        else:
-            data = {"user_nums": 1, "team_service_num": 0, "total_memory": 0, "eid": self.team.enterprise_id}
-            result = general_message(200, "success", "团队信息总览获取成功", bean=data)
-            return Response(result, status=200)
+        team_service_num = service_repo.get_team_service_num_by_team_id(self.team.tenant_id, self.response_region)
+        count_data["team_service_num"] = team_service_num
+        count_data["user_nums"] = users.count()
+        count_data["team_app_num"] = len(self.perm_apps)
+        count_data["logo"] = self.team.logo
+        if self.perm_apps[0] == -1:
+            groups = group_repo.get_tenant_region_groups(self.team.tenant_id, self.region_name, app_ids=self.perm_apps)
+            count_data["team_app_num"] = groups.count()
+        count_data["team_alias"] = self.tenant.tenant_alias
+        count_data["team_id"] = self.team.tenant_id
+        return Response(general_message(200, "success", "查询成功", bean=count_data))
 
 
 class ServiceGroupView(RegionTenantHeaderView):
@@ -542,22 +438,52 @@ class TeamAppSortViewView(RegionTenantHeaderView):
         """
         总览 团队应用信息
         """
-        sort = int(request.GET.get("sort", 1))
         query = request.GET.get("query", "")
         page = int(request.GET.get("page", 1))
         page_size = int(request.GET.get("page_size", 10))
-        groups = group_repo.get_tenant_region_groups(self.team.tenant_id, self.response_region, query, app_ids=self.perm_apps)
-        total = len(groups)
-        app_num_dict = {"total": total}
+        sort = int(request.GET.get("sort", 2))
+        apps = list()
+        all_group = group_repo.get_tenant_region_groups(self.team.tenant_id, self.response_region, query,
+                                                        app_ids=self.perm_apps)
         start = (page - 1) * page_size
         end = page * page_size
-        apps = []
-        if groups:
-            group_ids = [group.ID for group in groups]
-            group_ids = group_ids[start:end]
-            apps = group_service.get_multi_apps_all_info(sort, groups, group_ids, self.response_region, self.team_name,
-                                                         self.team.enterprise_id, self.team)
-        return Response(general_message(200, "success", "查询成功", list=apps, bean=app_num_dict), status=200)
+
+        if sort == 2:
+            groups = all_group[start:end]
+            for app in groups:
+                apps.append({
+                    "group_id": app.ID,
+                    "update_time": app.update_time,
+                    "create_time": app.create_time,
+                    "group_name": app.group_name,
+                    "service_list": [],
+                })
+        if sort == 1:
+            status_order = {
+                'RUNNING': 1,
+                'ABNORMAL': 2,
+                'STARTING': 3,
+                'CLOSED': 4
+            }
+            group_ids = all_group.values_list("ID", flat=True)
+            re_app_dict = group_service.get_region_app_statuses(self.tenant_name, self.region_name, group_ids)
+            sorted_app_list = sorted(re_app_dict.values(), key=lambda x: status_order.get(x['status'], 5))
+            sorted_app_list = sorted_app_list[start:end]
+            group_id_dict = {sorted_app.get("group_id"): {} for sorted_app in sorted_app_list}
+            if group_ids:
+                groups = group_repo.get_tenant_region_groups(self.team.tenant_id, self.response_region, query, app_ids=list(group_id_dict.keys()))
+            else:
+                groups = all_group[start:end]
+            for app in groups:
+                group_id_dict[app.ID] = {
+                    "group_id": app.ID,
+                    "update_time": app.update_time,
+                    "create_time": app.create_time,
+                    "group_name": app.group_name,
+                    "service_list": [],
+                }
+            apps = list(group_id_dict.values())
+        return Response(general_message(200, "success", "查询成功", list=apps), status=200)
 
 
 # 团队下应用环境变量模糊查询

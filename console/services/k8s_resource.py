@@ -7,7 +7,7 @@ from console.repositories.k8s_resources import k8s_resources_repo
 from console.repositories.region_app import region_app_repo
 from console.services.region_resource_processing import region_resource
 from www.apiclient.regionapi import RegionInvokeApi
-from www.models.main import Tenants
+from www.models.main import Tenants, TenantEnterprise, ServiceGroup
 
 region_api = RegionInvokeApi()
 

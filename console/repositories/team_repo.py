@@ -49,7 +49,6 @@ class TeamRepo(object):
         return tenant
 
     def get_tenants_by_user_id_and_eid(self, eid, user_id, name=None):
-        tenants = []
         enterprise = TenantEnterprise.objects.filter(enterprise_id=eid).first()
         if not enterprise:
             return enterprise
@@ -58,15 +57,14 @@ class TeamRepo(object):
                                                                                                    flat=True).order_by("-ID"))
         tenant_ids = sorted(set(tenant_ids), key=tenant_ids.index)
         if name:
-            for tenant_id in tenant_ids:
-                tn = Tenants.objects.filter(ID=tenant_id, tenant_alias__contains=name).first()
-                if tn:
-                    tenants.append(tn)
+            # 使用 Q 对象构建复杂查询条件
+            tenants = Tenants.objects.filter(
+                Q(ID__in=tenant_ids) & Q(tenant_alias__contains=name)
+            )
         else:
-            for tenant_id in tenant_ids:
-                tn = Tenants.objects.filter(ID=tenant_id).first()
-                if tn:
-                    tenants.append(tn)
+            tenants = Tenants.objects.filter(
+                ID__in=tenant_ids
+            )
         return tenants
 
     @staticmethod

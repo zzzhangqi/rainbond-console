@@ -269,7 +269,7 @@ class BaseService(object):
                         bean["app_detail_url"] = app.describe
                 if not app:
                     try:
-                        app = market_app_service.get_rainbond_app(tenant.enterprise_id, service_source.group_key)
+                        app = market_app_service.get_rainbond_app(service_source.group_key)
                     except RbdAppNotFound:
                         logger.warning("not found app {0} version {1} in local market".format(
                             service_source.group_key, service_source.version))

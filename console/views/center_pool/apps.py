@@ -25,71 +25,6 @@ from www.utils.crypt import make_uuid
 logger = logging.getLogger('default')
 
 
-class CenterAppListView(JWTAuthApiView):
-    @never_cache
-    def get(self, request, enterprise_id, *args, **kwargs):
-        """
-        获取本地市场应用
-        ---
-        parameters:
-            - name: scope
-              description: 范围
-              required: false
-              type: string
-              paramType: query
-            - name: app_name
-              description: 应用名字
-              required: false
-              type: string
-              paramType: query
-            - name: page
-              description: 当前页
-              required: true
-              type: string
-              paramType: query
-            - name: page_size
-              description: 每页大小,默认为10
-              required: true
-              type: string
-              paramType: query
-        """
-        scope = request.GET.get("scope", None)
-        app_name = request.GET.get("app_name", None)
-        tags = request.GET.get("tags", [])
-        if tags:
-            tags = json.loads(tags)
-        page = int(request.GET.get("page", 1))
-        page_size = int(request.GET.get("page_size", 10))
-        app_list = []
-        apps = rainbond_app_repo.get_rainbond_apps_versions_by_eid(enterprise_id, app_name, tags, scope, page, page_size)
-        if apps and apps[0].app_name:
-            for app in apps:
-                versions_info = (json.loads(app.versions_info) if app.versions_info else [])
-                app_list.append({
-                    "update_time": app.update_time,
-                    "is_ingerit": app.is_ingerit,
-                    "app_id": app.app_id,
-                    "app_name": app.app_name,
-                    "pic": app.pic,
-                    "describe": app.describe,
-                    "create_time": app.create_time,
-                    "scope": app.scope,
-                    "versions_info": versions_info,
-                    "dev_status": app.dev_status,
-                    "tags": (json.loads(app.tags) if app.tags else []),
-                    "enterprise_id": app.enterprise_id,
-                    "is_official": app.is_official,
-                    "ID": app.ID,
-                    "source": app.source,
-                    "details": app.details,
-                    "install_number": app.install_number,
-                    "create_user": app.create_user,
-                    "create_team": app.create_team,
-                })
-
-        return MessageResponse("success", msg_show="查询成功", list=app_list, total=len(app_list), next_page=int(page) + 1)
-
-
 class CenterAppView(RegionTenantHeaderView):
     @never_cache
     def post(self, request, *args, **kwargs):
@@ -192,20 +127,22 @@ class CenterAppCLView(JWTAuthApiView):
               type: string
               paramType: query
         """
-        is_plugin = request.GET.get("is_plugin", False)
         scope = request.GET.get("scope", None)
         app_name = request.GET.get("app_name", None)
-        tags = request.GET.get("tags", [])
         is_complete = request.GET.get("is_complete", None)
         need_install = request.GET.get("need_install", "false")
-        arch = request.GET.get("arch", "")
-        if tags:
-            tags = json.loads(tags)
+        tenant_name = request.GET.get("tenant_name")
+        arch = request.GET.get("arch", "amd64") if request.GET.get("arch", "amd64") else "amd64"
         page = int(request.GET.get("page", 1))
         page_size = int(request.GET.get("page_size", 10))
-        apps, count = market_app_service.get_visiable_apps(self.user, enterprise_id, scope, app_name, tags, is_complete, page,
-                                                           page_size, need_install, is_plugin, arch)
-        return MessageResponse("success", msg_show="查询成功", list=apps, total=count, next_page=int(page) + 1)
+        apps, count, app_ids = market_app_service.get_visiable_apps(scope, app_name, is_complete, page,
+                                                           page_size, need_install, arch, tenant_name)
+        list = []
+        for a in apps:
+            app = a.to_dict()
+            app["versions_info"] = a.versions_info
+            list.append(app)
+        return MessageResponse("success", msg_show="查询成功", list=list, total=count, next_page=int(page) + 1)
 
     @never_cache
     def post(self, request, enterprise_id, *args, **kwargs):
@@ -347,7 +284,7 @@ class AppTagCDView(JWTAuthApiView):
         result = general_message(200, "success", "创建成功")
         if not tag_id:
             result = general_message(400, "fail", "请求参数错误")
-        app = rainbond_app_repo.get_rainbond_app_by_app_id(enterprise_id, app_id)
+        app = rainbond_app_repo.get_rainbond_app_by_app_id(app_id)
         if not app:
             result = general_message(404, "fail", "该应用不存在")
         try:
@@ -362,7 +299,7 @@ class AppTagCDView(JWTAuthApiView):
         result = general_message(200, "success", "删除成功")
         if not tag_id:
             result = general_message(400, "fail", "请求参数错误")
-        app = rainbond_app_repo.get_rainbond_app_by_app_id(enterprise_id, app_id)
+        app = rainbond_app_repo.get_rainbond_app_by_app_id(app_id)
         if not app:
             result = general_message(404, "fail", "该应用不存在")
         try:
@@ -385,7 +322,7 @@ class AppVersionUDView(JWTAuthApiView):
             "version_alias": version_alias,
             "app_version_info": app_version_info
         }
-        version = market_app_service.update_rainbond_app_version_info(enterprise_id, app_id, version, **body)
+        version = market_app_service.update_rainbond_app_version_info(app_id, version, **body)
         result = general_message(200, "success", "更新成功", bean=version.to_dict())
         return Response(result, status=result.get("code", 200))
 

@@ -162,6 +162,20 @@ class ErrVolumePath(ServiceHandleException):
         super(ErrVolumePath, self).__init__(msg, msg_show, status_code)
 
 
+class IncompleteParamError(ServiceHandleException):
+    def __init__(self, msg="Incomplete request parameters", msg_show="请求参数不全", status_code=400):
+        super(IncompleteParamError, self).__init__(msg, msg_show, status_code)
+
+
+class DeleteTeamError(ServiceHandleException):
+    def __init__(self,
+                 msg="There are running components under the current application",
+                 msg_show="团队下有运行状态的组件,请关闭组件后再删除当前团队",
+                 status_code=409,
+                 error_code=None):
+        super(DeleteTeamError, self).__init__(msg, msg_show, status_code, error_code)
+
+
 class ErrInsufficientResource(ServiceHandleException):
     pass
 
@@ -180,6 +194,14 @@ class ErrTenantLackOfMemory(ErrInsufficientResource):
         self.msg_show = "团队使用内存已超过限额，请联系企业管理员增加限额"
         self.status_code = 412
         self.error_code = 10413
+
+
+class ErrTenantLackOfStorage(ErrInsufficientResource):
+    def __init__(self):
+        super(ErrTenantLackOfStorage, self).__init__("tenant lack of memory")
+        self.msg_show = "团队使用存储已超过限额，请联系企业管理员增加限额"
+        self.status_code = 412
+        self.error_code = 10414
 
 
 class ErrClusterAuthLackOfMemory(ErrInsufficientResource):

@@ -1,36 +1,44 @@
+"""
+该文件主要是团队服务，包括团队的增删改查，团队成员的增删改查、添加用户到团队、获取团队资源限额等操作。
+"""
 # -*- coding: utf-8 -*-
 import datetime
+import json
 import logging
 import random
 import string
 
 from console.exception.exceptions import UserNotExistError
-from console.exception.main import ServiceHandleException
+from console.exception.main import DeleteTeamError, ServiceHandleException
 from console.models.main import TenantUserRole
 from console.repositories.app import TenantServiceInfoRepository
 from console.repositories.enterprise_repo import enterprise_repo
+from console.repositories.group import group_repo
 from console.repositories.perm_repo import role_repo
 from console.repositories.region_repo import region_repo
+from console.repositories.service_repo import service_repo
 from console.repositories.team_repo import team_repo, team_registry_auth_repo
 from console.repositories.tenant_region_repo import tenant_region_repo
 from console.repositories.user_repo import user_repo
-from console.repositories.service_repo import service_repo
-from console.repositories.group import group_repo
 from console.services.common_services import common_services
 from console.services.enterprise_services import enterprise_services
 from console.services.exception import ErrTenantRegionNotFound
 from console.services.perm_services import (role_kind_services, user_kind_role_service)
-from console.services.region_services import region_services
+
+
 from django.conf import settings
 from django.core.paginator import Paginator, EmptyPage
 from django.db import transaction
 from django.db.models import Q
 from www.apiclient.regionapi import RegionInvokeApi
 from www.apiclient.regionapibaseclient import RegionApiBaseHttpClient
-from www.models.main import PermRelTenant, Tenants, TenantServiceInfo
+from www.models.main import PermRelTenant, Tenants, TenantServiceInfo, TenantRegionInfo
 from www.utils.crypt import make_uuid
 
-logger = logging.getLogger("default")
+from console.utils.log_format import get_format_logger
+
+logger = get_format_logger()
+
 region_api = RegionInvokeApi()
 
 
@@ -72,11 +80,11 @@ class TeamService(object):
             raise ServiceHandleException(msg="user not found", msg_show="用户不存在", status_code=404)
         exist_team_user = PermRelTenant.objects.filter(tenant_id=tenant.ID, user_id=user.user_id)
         enterprise = enterprise_services.get_enterprise_by_enterprise_id(enterprise_id=tenant.enterprise_id)
-        if exist_team_user:
-            raise ServiceHandleException(msg="user exist", msg_show="用户已经加入此团队")
-        PermRelTenant.objects.create(tenant_id=tenant.ID, user_id=user.user_id, identity="", enterprise_id=enterprise.ID)
         if role_ids:
             user_kind_role_service.update_user_roles(kind="team", kind_id=tenant.tenant_id, user=user, role_ids=role_ids)
+        if exist_team_user:
+            return
+        PermRelTenant.objects.create(tenant_id=tenant.ID, user_id=user.user_id, identity="", enterprise_id=enterprise.ID)
 
     def get_team_users(self, team, name=None):
         users = team_repo.get_tenant_users_by_tenant_ID(team.ID)
@@ -227,11 +235,18 @@ class TeamService(object):
 
     @transaction.atomic()
     def delete_by_tenant_id(self, user, tenant):
+        # from console.services.region_services import region_services
         tenant_regions = region_repo.get_tenant_regions_by_teamid(tenant.tenant_id)
+        region_list = list()
         for region in tenant_regions:
             try:
-                region_services.delete_tenant_on_region(tenant.enterprise_id, tenant.tenant_name, region.region_name, user)
+                from console.services.region_services import region_services
+                region_config = region_services.delete_tenant_on_region(tenant.enterprise_id, tenant.tenant_name,
+                                                                        region.region_name, user)
+                region_list.append(region_config.region_alias)
             except ServiceHandleException as e:
+                if e.status_code == 409:
+                    raise DeleteTeamError
                 raise e
             except Exception as e:
                 logger.exception(e)
@@ -246,6 +261,7 @@ class TeamService(object):
             if sid:
                 transaction.savepoint_rollback(sid)
             logger.exception(e)
+        return region_list
 
     def get_current_user_tenants(self, user_id):
         tenants = team_repo.get_tenants_by_user_id(user_id=user_id)
@@ -281,11 +297,25 @@ class TeamService(object):
             team_name = "default"
         else:
             team_name = self.random_tenant_name(enterprise=user.enterprise_id, length=8)
+        is_public = settings.MODULES.get('SSO_LOGIN')
+        if not is_public:
+            pay_type = 'payed'
+            pay_level = 'company'
+        else:
+            pay_type = 'free'
+            pay_level = 'company'
+        expired_day = 7
+        if hasattr(settings, "TENANT_VALID_TIME"):
+            expired_day = int(settings.TENANT_VALID_TIME)
+        expire_time = datetime.datetime.now() + datetime.timedelta(days=expired_day)
         if not team_alias:
-            team_alias = "{0}的团队".format(user.nick_name)
+            team_alias = "{0}团队".format(namespace)
         params = {
             "tenant_name": team_name,
+            "pay_type": pay_type,
+            "pay_level": pay_level,
             "creater": user.user_id,
+            "expired_time": expire_time,
             "tenant_alias": team_alias,
             "enterprise_id": enterprise.enterprise_id,
             "limit_memory": 0,
@@ -310,6 +340,7 @@ class TeamService(object):
         # check team
         tenant = team_repo.get_team_by_team_id(team_id)
         # check region
+        from console.services.region_services import region_services
         region_services.get_by_region_name(region_name)
 
         tenant_region = region_repo.get_team_region_by_tenant_and_region(team_id, region_name)
@@ -335,6 +366,80 @@ class TeamService(object):
         for tenant in raw_tenants:
             tenants.append(self.team_with_region_info(tenant, user))
         return tenants, total
+
+    def get_enterprise_teams_fenye(self, enterprise_id, query=None, page=None, page_size=None):
+        tall = team_repo.get_teams_by_enterprise_id(enterprise_id, query=query)
+        total = tall.count()
+        if page is not None and page_size is not None:
+            try:
+                start = (page - 1) * page_size
+                end = page * page_size
+                raw_tenants = tall[start:end]
+            except EmptyPage:
+                raw_tenants = []
+        else:
+            raw_tenants = tall
+        return raw_tenants, total
+
+    def jg_teams(self, eid, teams):
+        tenants = dict()
+        creaters = [team.creater for team in teams]
+        users = user_repo.get_by_user_ids(creaters)
+        user_list = {user.user_id: user.get_name() for user in users}
+        tenant_ids = [team.tenant_id for team in teams]
+        region_dict = dict()
+        tenant_IDs = {ten.ID: ten.tenant_id for ten in teams}
+        user_id_list = PermRelTenant.objects.filter().values("tenant_id", "user_id")
+        user_id_dict = dict()
+        for user_id in user_id_list:
+            user_id_dict[tenant_IDs.get(user_id["tenant_id"])] = user_id_dict.get(tenant_IDs.get(user_id["tenant_id"]), 0) + 1
+        for team in teams:
+            region_info_map = []
+            region_name_list = team_repo.get_team_region_names(team.tenant_id)
+            if region_name_list:
+                region_infos = region_repo.get_region_by_region_names(region_name_list)
+                if region_infos:
+                    for region in region_infos:
+                        region_dict[region.region_name] = 1
+                        region_info_map.append({"region_name": region.region_name, "region_alias": region.region_alias, "region_id": region.region_id})
+            tenant = team.to_dict()
+            # 获取团队的集群信息
+            tenant["region"] = region_info_map[0]["region_name"] if len(region_info_map) > 0 else ""
+            tenant["region_list"] = region_info_map
+            tenant["team_alias"] = team.tenant_alias
+            tenant["team_name"] = team.tenant_name
+            tenant["user_number"] = user_id_dict.get(team.tenant_id, 0)
+            tenant["namespace"] = team.namespace
+            tenant["owner_name"] = user_list.get(team.creater)
+            tenant["set_limit_memory"] = 0
+            tenant["set_limit_cpu"] = 0
+            tenant["set_limit_storage"] = 0
+            tenant["running_apps"] = 0
+            tenant["memory_request"] = 0
+            tenant["cpu_request"] = 0
+            tenants[team.tenant_id] = tenant
+        if region_dict:
+            region_tenants = list()
+            for region_id in region_dict.keys():
+                region_tenants += self.get_region_tenant(eid, region_id, tenant_ids)
+            for region_tenant in region_tenants:
+                tenant_id = region_tenant.get("UUID")
+                tenants.get(tenant_id)["set_limit_memory"] = region_tenant.get("LimitMemory", 0)
+                tenants.get(tenant_id)["set_limit_cpu"] = region_tenant.get("LimitCPU", 0)
+                tenants.get(tenant_id)["set_limit_storage"] = region_tenant.get("LimitStorage", 0)
+                tenants.get(tenant_id)["running_apps"] = region_tenant.get("running_applications", 0),
+                tenants.get(tenant_id)["memory_request"] = region_tenant.get("memory_request", 0)
+                tenants.get(tenant_id)["cpu_request"] = region_tenant.get("cpu_request", 0)
+        return tenants.values()
+
+    def get_region_tenant(self, eid, region_id, tenant_ids):
+        res, body = region_api.list_tenants(eid, region_id, json.dumps(tenant_ids))
+        if body.get("list"):
+            tenants = body.get("list")
+            if tenants:
+                return tenants
+        return []
+
 
     def list_teams_v2(self, eid, query=None, page=None, page_size=None):
         if query:
@@ -393,7 +498,11 @@ class TeamService(object):
                 region_infos = region_repo.get_region_by_region_names(region_name_list)
                 if region_infos:
                     for region in region_infos:
-                        region_info_map.append({"region_name": region.region_name, "region_alias": region.region_alias})
+                        region_info_map.append({
+                            "region_name": region.region_name,
+                            "region_alias": region.region_alias,
+                            "region_id": region.region_id
+                        })
             info["region"] = region_info_map[0]["region_name"] if len(region_info_map) > 0 else ""
             info["region_list"] = region_info_map
         service_reps = TenantServiceInfoRepository()
@@ -403,13 +512,20 @@ class TeamService(object):
         info["service_count"] = service_count
         return info
 
+    def get_user_create_teams(self, enterprise_id, user, name=None, get_region=True, use_region=False):
+        pass
+
     def get_teams_region_by_user_id(self, enterprise_id, user, name=None, get_region=True, use_region=False):
         teams_list_no_region = list()
         teams_list_use_region = list()
         tenants = enterprise_repo.get_enterprise_user_teams(enterprise_id, user.user_id, name)
+        tenant_ids = [tenant.tenant_id for tenant in tenants]
+        t_region = TenantRegionInfo.objects.filter(tenant_id__in=tenant_ids)
+        tenant_regions = {tr.tenant_id: tr.region_name for tr in t_region}
         if tenants:
             for tenant in tenants:
                 team = self.team_with_region_info(tenant, user, get_region=get_region)
+                team["region_name"] = tenant_regions.get(tenant.tenant_id, "")
                 if not team.get("region_list"):
                     teams_list_no_region.append(team)
                 else:
@@ -456,7 +572,7 @@ class TeamService(object):
             d["creater"] = data.get("creater")
         if data.get("tenant_alias", ""):
             d["tenant_alias"] = data.get("tenant_alias")
-        team_repo.update_by_tenant_id(tenant_id).update(**d)
+        return team_repo.update_by_tenant_id(tenant_id, **d)
 
     def overview(self, team, region_name):
         resource = self.get_tenant_resource(team, region_name)
@@ -497,13 +613,28 @@ class TeamService(object):
             return data
         return None
 
-    def get_tenant_list_by_region(self, eid, region_id, page=1, page_size=10):
+    def get_tenant_list_by_region(self, eid, region_id, page=1, page_size=10, extend=False, tenant_ids=""):
         teams = team_repo.get_team_by_enterprise_id(eid)
         team_maps = {}
+        team_users = {}
+        tenant_ids = []
         if teams:
             for team in teams:
+                tenant_ids.append(team.tenant_id)
                 team_maps[team.tenant_id] = team
-        res, body = region_api.list_tenants(eid, region_id, page, page_size)
+                if not extend:
+                    continue
+                # TODO: batch query users
+                count = user_repo.count_users_by_tenant_id(team.tenant_id)
+                team_users[team.tenant_id] = count
+
+        # Get the number of applications and components under each team
+        components = service_repo.count_component_nums_by_tenant_ids(tenant_ids)
+        team_components = {component["tenant_id"]: component["counts"] for component in components}
+        apps = group_repo.count_app_nums_by_tenant_ids(tenant_ids)
+        tenant_apps = {app["tenant_id"]: app["counts"] for app in apps}
+
+        res, body = region_api.list_tenants(eid, region_id, tenant_ids)
         tenant_list = []
         total = 0
         if body.get("bean"):
@@ -524,15 +655,20 @@ class TeamService(object):
                         "running_app_internal_num": tenant["running_app_internal_num"],
                         "running_app_third_num": tenant["running_app_third_num"],
                         "set_limit_memory": tenant["LimitMemory"],
-                        "running_applications": tenant["running_applications"]
+                        "set_limit_cpu": tenant["LimitCPU"],
+                        "set_limit_storage": tenant["LimitStorage"],
+                        "users": team_users.get(tenant["UUID"], 0),
+                        "components": team_components.get(tenant["UUID"], 0),
+                        "running_applications": tenant.get("running_applications", 0),
+                        "applications": tenant_apps.get(tenant["UUID"], 0),
                     })
         else:
             logger.error(body)
         return tenant_list, total
 
-    def set_tenant_memory_limit(self, eid, region_id, tenant_name, limit):
+    def set_tenant_resource_limit(self, eid, region_id, tenant_name, limit):
         try:
-            region_api.set_tenant_limit_memory(eid, tenant_name, region_id, body=limit)
+            region_api.set_tenant_resource_limit(eid, tenant_name, region_id, body=limit)
         except RegionApiBaseHttpClient.CallApiError as e:
             logger.exception(e)
             raise ServiceHandleException(status_code=500, msg="", msg_show="设置租户限额失败")
@@ -543,6 +679,10 @@ class TeamService(object):
     @staticmethod
     def check_resource_name(tenant_name: str, region_name: str, rtype: string, name: str):
         return region_api.check_resource_name(tenant_name, region_name, rtype, name)
+
+    @staticmethod
+    def count_teams(enterprise_id):
+        return Tenants.objects.filter(enterprise_id=enterprise_id).count()
 
     def list_registry_auths(self, tenant_id, region_name):
         return team_registry_auth_repo.list_by_team_id(tenant_id, region_name)

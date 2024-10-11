@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from urllib.parse import quote
 
 from deprecated import deprecated
 
@@ -531,69 +532,25 @@ class GroupService(object):
         services = service_repo.get_services_by_service_ids(service_ids)
         return services
 
-    def get_multi_apps_all_info(self, sort, groups, app_ids, region, tenant_name, enterprise_id, tenant):
-        app_list = groups.filter(ID__in=app_ids)
-        service_list = service_repo.get_services_in_multi_apps_with_app_info(app_ids)
-        # memory info
-        service_ids = [service.service_id for service in service_list]
-        status_list = base_service.status_multi_service(region, tenant_name, service_ids, enterprise_id)
-        service_status = dict()
-        if status_list is None:
-            raise ServiceHandleException(msg="query status failure", msg_show="查询组件状态失败")
-        for status in status_list:
-            service_status[status["service_id"]] = status
-
-        app_id_statuses = self.get_region_app_statuses(tenant_name, region, app_ids)
+    def get_multi_apps_all_info(self, app_ids, region_name, tenant):
+        app_id_statuses = self.get_region_app_statuses(tenant.tenant_name, region_name, app_ids)
         apps = dict()
-        for app in app_list:
-            app_status = app_id_statuses.get(app.ID)
-            apps[app.ID] = {
-                "group_id": app.ID,
-                "update_time": app.update_time,
-                "create_time": app.create_time,
-                "group_name": app.group_name,
-                "group_note": app.note,
-                "service_list": [],
+        for app_id in app_ids:
+            app_status = app_id_statuses.get(app_id)
+            apps[app_id] = {
+                "group_id": app_id,
+                "services_num": 0,
                 "used_mem": app_status.get("memory", 0) if app_status else 0,
                 "status": app_status.get("status", "UNKNOWN") if app_status else "UNKNOWN",
-                "logo": app.logo,
                 "accesses": [],
             }
-        # 获取应用下组件的访问地址
+        service_list = service_repo.get_services_in_multi_apps_with_app_info(app_ids)
         from console.services.app_config import port_service
-        accesses = port_service.list_access_infos(tenant, service_list)
+        accesses = port_service.list_access_infos(tenant, service_list, region_name)
         for service in service_list:
-            svc_sas = service_status.get(service.service_id, {"status": "failure", "used_mem": 0})
-            service.status = svc_sas["status"]
-            service.used_mem = svc_sas["used_mem"]
-            apps[service.group_id]["service_list"].append(service)
+            apps[service.group_id]["services_num"] += 1
             apps[service.group_id]["accesses"].append(accesses[service.service_id])
-
-        re_app_list = []
-        for a in app_list:
-            app = apps.get(a.ID)
-            app["services_num"] = len(app["service_list"])
-            if not app.get("run_service_num"):
-                app["run_service_num"] = 0
-            if not app.get("used_mem"):
-                app["used_mem"] = 0
-            if not app.get("allocate_mem"):
-                app["allocate_mem"] = 0
-            for svc in app["service_list"]:
-                app["allocate_mem"] += svc.min_memory
-                if svc.status in ["running", "upgrade", "starting", "some_abnormal"]:
-                    # if is running used_mem ++
-                    app["run_service_num"] += 1
-            if app["used_mem"] > app["allocate_mem"]:
-                app["allocate_mem"] = app["used_mem"]
-            app.pop("service_list")
-            re_app_list.append(app)
-        if sort != 2:
-            re_app_list = sorted(
-                re_app_list,
-                key=lambda i: (1 if i["status"] == "RUNNING" else 2 if i["status"] == "ABNORMAL" else 3
-                               if i["status"] == "STARTING" else 5 if i["status"] == "CLOSED" else 4, -i["used_mem"]))
-        return re_app_list
+        return apps.values()
 
     @staticmethod
     def get_region_app_statuses(tenant_name, region_name, app_ids):
@@ -623,7 +580,11 @@ class GroupService(object):
         for app_id in app_ids:
             if not app_id_rels.get(app_id):
                 continue
-            app_id_status_rels[app_id] = region_app_id_status_rels.get(app_id_rels[app_id])
+            region_app_id_status = region_app_id_status_rels.get(app_id_rels[app_id])
+            if not region_app_id_status:
+                continue
+            region_app_id_status["group_id"] = app_id
+            app_id_status_rels[app_id] = region_app_id_status
         return app_id_status_rels
 
     @staticmethod

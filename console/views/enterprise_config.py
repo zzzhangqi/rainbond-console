@@ -2,14 +2,18 @@
 """
   Created on 18/3/15.
 """
+import json
 import logging
+import os
 
 from django.views.decorators.cache import never_cache
 from rest_framework import status
 from rest_framework.response import Response
 
+from console.enum.system_config import ConfigKeyEnum
 from console.exception.main import AbortRequest
-from console.services.config_service import EnterpriseConfigService
+from console.models.main import ConsoleSysConfig
+from console.services.config_service import EnterpriseConfigService, ConfigService
 from console.services.enterprise_services import enterprise_services
 from www.utils.return_message import general_message
 from console.utils.reqparse import bool_argument
@@ -17,6 +21,153 @@ from console.utils.reqparse import parse_item
 from console.views.base import EnterpriseAdminView, JWTAuthApiView
 
 logger = logging.getLogger("default")
+
+
+class EnterpriseConfigLimitView(EnterpriseAdminView):
+    def get(self, request, enterprise_id, *args, **kwargs):
+        key = request.GET.get('key')
+        configs = ConsoleSysConfig.objects.filter(key=key)
+        if key == "personalLimit":
+            ret_data = {
+                "key": key,
+                "value": {
+                    "limit_cpu": {
+                        "minValue": os.getenv("PERSONAL_LIMIT_MIN_CPU", 1000),
+                        "maxValue": os.getenv("PERSONAL_LIMIT_MAX_CPU", 8000)
+                    },
+                    "limit_memory": {
+                        "minValue": os.getenv("PERSONAL_LIMIT_MIN_MEMORY", 1024),
+                        "maxValue": os.getenv("PERSONAL_LIMIT_MAX_MEMORY", 32768)
+                    },
+                    "limit_storage": {
+                        "minValue": os.getenv("PERSONAL_LIMIT_MIN_STORAGE", 1),
+                        "maxValue": os.getenv("PERSONAL_LIMIT_MAX_STORAGE", 300)
+                    }
+                },
+                "desc": "企业级资源限额默认数据"
+            }
+        else:
+            ret_data = {
+                "key": key,
+                "value": {
+                    "limit_cpu": {
+                        "minValue": os.getenv("ENTERPRISE_LIMIT_MIN_CPU", 1000),
+                        "maxValue": os.getenv("ENTERPRISE_LIMIT_MAX_CPU", 40000)
+                    },
+                    "limit_memory": {
+                        "minValue": os.getenv("ENTERPRISE_LIMIT_MIN_MEMORY", 1024),
+                        "maxValue": os.getenv("ENTERPRISE_LIMIT_MAX_MEMORY", 131072)
+                    },
+                    "limit_storage": {
+                        "minValue": os.getenv("ENTERPRISE_LIMIT_MIN_STORAGE", 1),
+                        "maxValue": os.getenv("ENTERPRISE_LIMIT_MAX_STORAGE", 512)
+                    }
+                },
+                "desc": "企业级资源限额默认数据"
+            }
+        if len(configs) != 0:
+            config = configs[0]
+            ret_data = {'key': config.key, 'value': json.loads(config.value), 'desc': config.desc}
+        return Response(ret_data, status=status.HTTP_200_OK)
+
+    def put(self, request, enterprise_id, *args, **kwargs):
+        key = request.GET.get('key')
+        data = request.data
+
+        config, created = ConsoleSysConfig.objects.get_or_create(
+            key=key,
+            defaults={
+                'type': 'json',
+                'enable': 1,
+                'desc': "企业级资源限额默认数据",
+                'enterprise_id': enterprise_id
+            }
+        )
+        if created:
+            config.value = json.dumps(data)
+            config.save()
+            return Response(status=status.HTTP_201_CREATED,data=config.to_dict())
+        else:
+            config.value = json.dumps(data)
+            config.save()
+            return Response(status=status.HTTP_200_OK,data=config.to_dict())
+
+
+class EnterpriseConfigView(EnterpriseAdminView):
+    @never_cache
+    def put(self, request, enterprise_id, *args, **kwargs):
+        title = parse_item(request, "title")
+        logo = parse_item(request, "logo")
+        favicon = parse_item(request, "favicon")
+        enterprise_alias = parse_item(request, "enterprise_alias")
+        doc_url = parse_item(request, "doc_url")
+        enable_official_demo = parse_item(request, "enable_official_demo", default=True)
+        login_image = parse_item(request, "login_image")
+        header_color = request.data.get("header_color", "")
+        header_writing_color = request.data.get("header_writing_color", "")
+        sidebar_color = request.data.get("sidebar_color", "")
+        sidebar_writing_color = request.data.get("sidebar_writing_color", "")
+        footer = request.data.get("footer", "")
+        shadow = parse_item(request, "shadow", default=True)
+        # 是否显示k8s集群相关
+        show_k8s = parse_item(request, "show_k8s")
+        # 是否显示切换语言
+        show_langue = parse_item(request, "show_langue")
+
+        config_service = ConfigService()
+        ent_config_service = EnterpriseConfigService(enterprise_id)
+
+        if title:
+            config_service.update_config_value(ConfigKeyEnum.TITLE.name, title)
+            ent_config_service.update_config_value(ConfigKeyEnum.TITLE.name, title)
+        if logo:
+            config_service.update_config_value(ConfigKeyEnum.LOGO.name, logo)
+            ent_config_service.update_config_value(ConfigKeyEnum.LOGO.name, logo)
+        if enterprise_alias:
+            enterprise_services.update_alias(enterprise_id, enterprise_alias)
+        if favicon:
+            config_service.update_config_value(ConfigKeyEnum.FAVICON.name, favicon)
+            ent_config_service.update_config_value(ConfigKeyEnum.FAVICON.name, favicon)
+        if login_image:
+            config_service.update_config_value(ConfigKeyEnum.LOGIN_IMAGE.name, login_image)
+            ent_config_service.update_config_value(ConfigKeyEnum.LOGIN_IMAGE.name, login_image)
+        if type(show_k8s) == bool:
+            ent_config_service.update_config_enable_status(ConfigKeyEnum.SHOW_K8S.name, show_k8s)
+        if type(show_langue) == bool:
+            ent_config_service.update_config_enable_status(ConfigKeyEnum.SHOW_LANGUE.name, show_langue)
+
+        config_service.update_config_value(ConfigKeyEnum.HEADER_COLOR.name, header_color)
+        ent_config_service.update_config_value(ConfigKeyEnum.HEADER_COLOR.name, header_color)
+
+        config_service.update_config_value(ConfigKeyEnum.HEADER_WRITING_COLOR.name, header_writing_color)
+        ent_config_service.update_config_value(ConfigKeyEnum.HEADER_WRITING_COLOR.name, header_writing_color)
+
+        config_service.update_config_value(ConfigKeyEnum.SIDEBAR_COLOR.name, sidebar_color)
+        ent_config_service.update_config_value(ConfigKeyEnum.SIDEBAR_COLOR.name, sidebar_color)
+
+        config_service.update_config_value(ConfigKeyEnum.SIDEBAR_WRITING_COLOR.name, sidebar_writing_color)
+        ent_config_service.update_config_value(ConfigKeyEnum.SIDEBAR_WRITING_COLOR.name, sidebar_writing_color)
+
+        config_service.update_config_value(ConfigKeyEnum.FOOTER.name, footer)
+        ent_config_service.update_config_value(ConfigKeyEnum.FOOTER.name, footer)
+
+        config_service.update_config_value(ConfigKeyEnum.SHADOW.name, shadow)
+        ent_config_service.update_config_enable_status(ConfigKeyEnum.SHADOW.name, shadow)
+
+        doc_url_value = dict()
+        doc_url_value["platform_url"] = ""
+        if doc_url:
+            if not doc_url.startswith(('http://', 'https://')):
+                doc_url = "http://{}".format(doc_url)
+            if not doc_url.endswith('/'):
+                doc_url = doc_url + '/'
+            doc_url_value["platform_url"] = doc_url
+        ent_config_service.update_config_value(ConfigKeyEnum.DOCUMENT.name, doc_url_value)
+        ent_config_service.update_config_enable_status(ConfigKeyEnum.OFFICIAL_DEMO.name, enable_official_demo)
+        config_service.update_config_value(ConfigKeyEnum.DOCUMENT.name, doc_url_value)
+        config_service.update_config_enable_status(ConfigKeyEnum.OFFICIAL_DEMO.name, enable_official_demo)
+
+        return Response(status=status.HTTP_200_OK)
 
 
 class EnterpriseObjectStorageView(EnterpriseAdminView):

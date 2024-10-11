@@ -202,7 +202,8 @@ class EnterpriseTeams(JWTAuthApiView):
                         ret_team.append(tenant)
             except Exception as e:
                 logger.exception(e)
-        data = {"total_count": total, "page": page, "page_size": page_size, "list": ret_team}
+        jg_teams = team_services.jg_teams(enterprise_id, teams)
+        data = {"total_count": total, "page": page, "page_size": page_size, "list": jg_teams}
         result = general_message(200, "success", None, bean=data)
         return Response(result, status=status.HTTP_200_OK)
 

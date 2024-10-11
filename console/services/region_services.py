@@ -1,6 +1,10 @@
+"""
+该文件主要是处理集群相关的业务逻辑，包括集群的创建、删除、查询等操作。
+"""
 # -*- coding: utf-8 -*-
 import json
 import logging
+import os
 import base64
 import subprocess
 
@@ -8,10 +12,9 @@ import yaml
 from console.enum.region_enum import RegionStatusEnum
 from console.exception.exceptions import RegionUnreachableError
 from console.exception.main import ServiceHandleException
-from console.models.main import ConsoleSysConfig, RegionConfig
+from console.models.main import ConsoleSysConfig, RegionConfig, RainbondCenterAppVersion
 from console.repositories.app import service_repo
 from console.repositories.group import group_repo
-from console.repositories.init_cluster import rke_cluster
 from console.repositories.plugin.plugin import plugin_repo
 from console.repositories.region_repo import region_repo
 from console.repositories.team_repo import team_repo
@@ -28,7 +31,10 @@ from www.apiclient.marketclient import MarketOpenAPI
 from www.apiclient.regionapi import RegionInvokeApi
 from www.utils.crypt import make_uuid
 
-logger = logging.getLogger("default")
+from console.utils.log_format import get_format_logger
+
+logger = get_format_logger()
+
 region_api = RegionInvokeApi()
 market_api = MarketOpenAPI()
 
@@ -143,6 +149,9 @@ class RegionService(object):
         else:
             return []
 
+    def list(self):
+        region_repo.list()
+
     def list_by_tenant_id(self, tenant_id, query="", page=None, page_size=None):
         regions = region_repo.list_by_tenant_id(tenant_id, query, page, page_size)
         total = region_repo.count_by_tenant_id(tenant_id, query)
@@ -166,7 +175,8 @@ class RegionService(object):
 
     def get_public_key(self, tenant, region):
         try:
-            res, body = region_api.get_region_publickey(tenant.tenant_name, region, tenant.enterprise_id, tenant.tenant_id)
+            res, body = region_api.get_region_publickey(tenant.tenant_name, region, tenant.enterprise_id,
+                                                        tenant.tenant_id)
             if body and "bean" in body:
                 return body["bean"]
             return {}
@@ -211,14 +221,15 @@ class RegionService(object):
             })
         return result, total
 
-    def get_regions_with_resource(self, query="", page=None, page_size=None):
+    def list_regions(self, query="", check_status=True, page=None, page_size=None):
         # get all region list
         regions = region_repo.get_all_regions(query)
         total = regions.count()
-        if page and page_size:
+        if page and page_size > 0:
             paginator = Paginator(regions, page_size)
             regions = paginator.page(page)
-        return self.conver_regions_info(regions, "yes"), total
+        check_status = "yes" if check_status else "no"
+        return self.conver_regions_info(regions, check_status), total
 
     def get_region_httpdomain(self, region_name):
         region = region_repo.get_region_by_region_name(region_name)
@@ -244,8 +255,12 @@ class RegionService(object):
             return region.url
         return ""
 
+    def get_region_by_region_sn(self, region_sn):
+        region_config = region_repo.get_region_config_by_region_sn(region_sn)
+        return region_config.region_name
+
     @transaction.atomic
-    def create_tenant_on_region(self, enterprise_id, team_name, region_name, namespace):
+    def create_tenant_on_region(self, enterprise_id, team_name, region_name, namespace, region_key=None):
         tenant = team_repo.get_team_by_team_name_and_eid(enterprise_id, team_name)
         region_config = region_repo.get_enterprise_region_by_region_name(enterprise_id, region_name)
         if not region_config:
@@ -255,11 +270,13 @@ class RegionService(object):
             tenant_region_info = {"tenant_id": tenant.tenant_id, "region_name": region_name, "is_active": False}
             tenant_region = region_repo.create_tenant_region(**tenant_region_info)
         if not tenant_region.is_init:
-            res, body = region_api.create_tenant(region_name, tenant.tenant_name, tenant.tenant_id, tenant.enterprise_id,
+            res, body = region_api.create_tenant(region_name, tenant.tenant_name, tenant.tenant_id,
+                                                 tenant.enterprise_id,
                                                  namespace)
             if res["status"] != 200 and body['msg'] != 'tenant name {} is exist'.format(tenant.tenant_name):
                 logger.error(res)
                 raise ServiceHandleException(msg="cluster init failure ", msg_show="集群初始化租户失败")
+            namespace = body["bean"]["namespace"]
             tenant_region.is_active = True
             tenant_region.is_init = True
             tenant_region.region_tenant_id = tenant.tenant_id
@@ -276,14 +293,27 @@ class RegionService(object):
                 tenant_region.region_scope = region_config.scope
                 tenant_region.enterprise_id = tenant.enterprise_id
                 tenant_region.save()
-        return tenant_region
+        from console.services.group_service import group_service
+        _ = group_service.create_default_app(tenant, region_name)
+
+        if region_key:
+            try:
+                # 自动添加集群限额，如果后台配置的话
+                config = ConsoleSysConfig.objects.get(key=region_key)
+                region_api.set_tenant_resource_limit(enterprise_id, tenant.tenant_name,
+                                                     region_config.region_id, body=json.loads(config.value))
+            except Exception as e:
+                logger.error(e)
+
+        return tenant_region, namespace
 
     @transaction.atomic
     def delete_tenant_on_region(self, enterprise_id, team_name, region_name, user):
         tenant = team_repo.get_team_by_team_name_and_eid(enterprise_id, team_name)
         tenant_region = region_repo.get_team_region_by_tenant_and_region(tenant.tenant_id, region_name)
         if not tenant_region:
-            raise ServiceHandleException(msg="team not open cluster, not need close", msg_show="该团队未开通此集群，无需关闭")
+            raise ServiceHandleException(msg="team not open cluster, not need close",
+                                         msg_show="该团队未开通此集群，无需关闭")
         # start delete
         region_config = region_repo.get_enterprise_region_by_region_name(enterprise_id, region_name)
         ignore_cluster_resource = False
@@ -300,24 +330,29 @@ class RegionService(object):
             # check component status
             service_ids = [service.service_id for service in services]
             status_list = base_service.status_multi_service(
-                region=region_name, tenant_name=tenant.tenant_name, service_ids=service_ids, enterprise_id=tenant.enterprise_id)
-            status_list = [x for x in [x["status"] for x in status_list] if x not in ["closed", "undeploy"]]
+                region=region_name, tenant_name=tenant.tenant_name, service_ids=service_ids,
+                enterprise_id=tenant.enterprise_id)
+            status_list = [x for x in [x["status"] for x in status_list] if x not in ["closed", "undeploy", "unknow"]]
             if len(status_list) > 0:
                 raise ServiceHandleException(
                     msg="There are running components under the current application",
-                    msg_show="团队在集群{0}下有运行态的组件,请关闭组件后再卸载当前集群".format(region_config.region_alias))
+                    msg_show="团队在集群{0}下有运行态的组件,请关闭组件后再卸载当前集群".format(
+                        region_config.region_alias),
+                    status_code=409)
         # Components are the key to resource utilization,
         # and removing the cluster only ensures that the component's resources are freed up.
         from console.services.app_actions import app_manage_service
         from console.services.plugin import plugin_service
         not_delete_from_cluster = False
         for service in services:
-            not_delete_from_cluster = app_manage_service.really_delete_service(tenant, service, user, ignore_cluster_resource,
+            not_delete_from_cluster = app_manage_service.really_delete_service(tenant, service, user,
+                                                                               ignore_cluster_resource,
                                                                                not_delete_from_cluster)
         plugins = plugin_repo.get_tenant_plugins(tenant.tenant_id, region_name)
         if plugins:
             for plugin in plugins:
-                plugin_service.delete_plugin(region_name, tenant, plugin.plugin_id, ignore_cluster_resource, is_force=True)
+                plugin_service.delete_plugin(region_name, tenant, plugin.plugin_id, ignore_cluster_resource,
+                                             is_force=True)
 
         group_repo.list_tenant_group_on_region(tenant, region_name).delete()
         # delete tenant
@@ -327,19 +362,22 @@ class RegionService(object):
             except region_api.CallApiError as e:
                 if e.status != 404:
                     logger.error("delete tenant failure {}".format(e.body))
-                    raise ServiceHandleException(msg="delete tenant from cluster failure", msg_show="从集群删除租户失败")
+                    raise ServiceHandleException(msg="delete tenant from cluster failure",
+                                                 msg_show="从集群删除租户失败")
             except Exception as e:
                 logger.exception(e)
                 raise ServiceHandleException(msg="delete tenant from cluster failure", msg_show="从集群删除租户失败")
         tenant_region.delete()
+        return region_config
 
     def get_enterprise_free_resource(self, tenant_id, enterprise_id, region_name, user_name):
         try:
             res, data = market_api.get_enterprise_free_resource(tenant_id, enterprise_id, region_name, user_name)
             return True
         except Exception as e:
-            logger.error("get_new_user_free_res_pkg error with params: {}".format((tenant_id, enterprise_id, region_name,
-                                                                                   user_name)))
+            logger.error(
+                "get_new_user_free_res_pkg error with params: {}".format((tenant_id, enterprise_id, region_name,
+                                                                          user_name)))
             logger.exception(e)
             return False
 
@@ -378,6 +416,20 @@ class RegionService(object):
     def get_regions_by_enterprise_id(self, enterprise_id):
         return RegionConfig.objects.filter(enterprise_id=enterprise_id)
 
+    def json_region(self, region):
+        json_region_dict = dict()
+        json_region_dict["集群ID"] = region["region_name"]
+        json_region_dict["集群名称"] = region["region_alias"]
+        json_region_dict["API地址"] = region["url"]
+        json_region_dict["WebSocket通信地址"] = region["wsurl"]
+        json_region_dict["HTTP应用默认域名后缀"] = region["httpdomain"]
+        json_region_dict["httpdomain"] = region["httpdomain"]
+        json_region_dict["API-CA证书"] = region["ssl_ca_cert"]
+        json_region_dict["API-Client证书"] = region["cert_file"]
+        json_region_dict["API-Client证书密钥"] = region["key_file"]
+        json_region_dict["备注"] = region["desc"]
+        return json.dumps(json_region_dict, ensure_ascii=False)
+
     def add_region(self, region_data, user):
         ent = enterprise_services.get_enterprise_by_enterprise_id(region_data.get("enterprise_id"))
         if not ent:
@@ -385,16 +437,15 @@ class RegionService(object):
 
         region = region_repo.get_region_by_region_name(region_data["region_name"])
         if region:
-            raise ServiceHandleException(status_code=400, msg="", msg_show="集群ID{0}已存在".format(region_data["region_name"]))
+            raise ServiceHandleException(status_code=400, msg="",
+                                         msg_show="集群ID{0}已存在".format(region_data["region_name"]))
         try:
             region_api.test_region_api(region_data)
         except ServiceHandleException:
-            raise ServiceHandleException(status_code=400, msg="test link region field", msg_show="连接集群测试失败，请确认网络和集群状态")
-
-        # 根据当前企业查询是否有region
+            raise ServiceHandleException(status_code=400, msg="test link region field",
+                                         msg_show="连接集群测试失败，请确认网络和集群状态")
         exist_region = region_repo.get_region_by_enterprise_id(ent.enterprise_id)
         region = region_repo.create_region(region_data)
-        rke_cluster.update_cluster(create_status="interconnected")
 
         if exist_region:
             return region
@@ -405,7 +456,56 @@ class RegionService(object):
             # create default team
             from console.services.team_services import team_services
             team = team_services.create_team(user, ent, None, None, namespace="default")
-            region_services.create_tenant_on_region(ent.enterprise_id, team.tenant_name, region.region_name, team.namespace)
+            region_services.create_tenant_on_region(ent.enterprise_id, team.tenant_name, region.region_name,
+                                                    team.namespace)
+            # Do not create sample applications in offline environment
+            if os.getenv("IS_OFFLINE", False):
+                return region
+            # create sample applications
+            tenant = team_repo.get_team_by_team_name_and_eid(ent.enterprise_id, team.tenant_name)
+            group = group_repo.get_group_by_unique_key(tenant.tenant_id, region.region_name, "默认应用")
+
+            module_dir = os.path.dirname(__file__) + '/plugin/'
+            file_path = os.path.join(module_dir, 'init_app_default.json')
+            with open(file_path) as f:
+                default_app_config = json.load(f)
+                version_template = default_app_config["version_template"]
+                app_version = json.dumps(version_template)
+
+            # Create component dependencies for application model installation
+            scope = default_app_config["scope"]
+            init_app_info = {
+                "app_name": default_app_config["app_name"],
+                "scope": scope,
+                "pic": default_app_config["pic"],
+                "describe": default_app_config["describe"],
+            }
+            app_uuid = make_uuid()
+            from console.services.market_app_service import market_app_service
+            market_app_service.create_rainbond_app(ent.enterprise_id, init_app_info, app_uuid)
+
+            rainbond_app_version = RainbondCenterAppVersion(
+                app_template=app_version,
+                enterprise_id=ent.enterprise_id,
+                app_id=app_uuid,
+                version="1.0",
+                template_version="v1",
+                record_id=0,
+                share_team=team.tenant_name,
+                share_user=1,
+                scope=scope)
+            rainbond_app_version.save()
+
+            # Create default components
+            app_model_key = app_uuid
+            version = "1.0"
+            app_id = group.ID
+            install_from_cloud = False
+            is_deploy = True
+            market_name = ""
+            market_app_service.install_app(tenant, region, user, app_id, app_model_key, version, market_name,
+                                           install_from_cloud, is_deploy)
+            return region
         except Exception as e:
             logger.exception(e)
         return region
@@ -568,6 +668,8 @@ class RegionService(object):
             region_resource["ssl_ca_cert"] = region.ssl_ca_cert
             region_resource["cert_file"] = region.cert_file
             region_resource["key_file"] = region.key_file
+        region_resource["region_sn"] = region.region_sn
+        region_resource["region_sn_name"] = region.region_sn_name
         region_resource["desc"] = region.desc
         region_resource["total_memory"] = 0
         region_resource["used_memory"] = 0
@@ -596,9 +698,9 @@ class RegionService(object):
         region_resource = self.__init_region_resource_data(region, level)
         if check_status == "yes":
             try:
+                region.region_name = str(region.region_name)
                 _, rbd_version = region_api.get_enterprise_api_version_v2(
                     enterprise_id=region.enterprise_id, region=region.region_name)
-                region_services_status = region_repo.get_service_status_count_by_region_name(region)
                 res, body = region_api.get_region_resources(region.enterprise_id, region=region.region_name)
                 if rbd_version:
                     rbd_version = rbd_version["raw"]
@@ -609,13 +711,25 @@ class RegionService(object):
                     region_resource["used_memory"] = body["bean"]["req_mem"]
                     region_resource["total_cpu"] = body["bean"]["cap_cpu"]
                     region_resource["used_cpu"] = body["bean"]["req_cpu"]
+                    region_resource["total_gpu"] = body["bean"]["cap_gpu"]
+                    region_resource["used_gpu"] = body["bean"]["req_gpu"]
                     region_resource["total_disk"] = body["bean"]["cap_disk"] / 1024 / 1024 / 1024
                     region_resource["used_disk"] = body["bean"]["req_disk"] / 1024 / 1024 / 1024
                     region_resource["rbd_version"] = rbd_version
+                    region_resource["all_nodes"] = body["bean"]["all_node"]
+                    region_resource["pods"] = body["bean"]["pods"]
+                    region_resource["manage_node"] = body["bean"]["manage_node"]
+                    region_resource["notready_manage_node"] = body["bean"]["notready_manage_node"]
+                    region_resource["etcd_node"] = body["bean"]["etcd_node"]
+                    region_resource["notready_etcd_node"] = body["bean"]["notready_etcd_node"]
+                    region_resource["compute_node"] = body["bean"]["compute_node"]
+                    region_resource["notready_compute_node"] = body["bean"]["notready_compute_node"]
+                    region_resource["components"] = body["bean"]["components"]
+                    region_resource["applications"] = body["bean"]["applications"]
                     region_resource["resource_proxy_status"] = body["bean"]["resource_proxy_status"]
                     region_resource["k8s_version"] = body["bean"]["k8s_version"]
                     region_resource["all_nodes"] = body["bean"]["all_node"]
-                    region_resource["services_status"] = region_services_status
+                    region_resource["services_status"] = {"running": body["bean"]["running_pods"]}
                     region_resource["node_ready"] = body["bean"]["node_ready"]
                     res, body = region_api.get_cluster_nodes(region.region_name)
                     nodes = body["list"]
@@ -630,8 +744,13 @@ class RegionService(object):
                 region_resource["health_status"] = "failure"
         return region_resource
 
-    def get_enterprise_regions(self, enterprise_id, level="open", status="", check_status="yes"):
+    def get_region_sn_list(self, enterprise_id):
+        return region_repo.get_region_sn_list(enterprise_id)
+
+    def get_enterprise_regions(self, enterprise_id, level="open", status="", check_status="yes", region_sn=""):
         regions = region_repo.get_regions_by_enterprise_id(enterprise_id, status)
+        if region_sn:
+            regions = regions.filter(region_sn=region_sn)
         if not regions:
             return []
         return self.conver_regions_info(regions, check_status, level)
@@ -644,6 +763,14 @@ class RegionService(object):
 
     def update_enterprise_region(self, enterprise_id, region_id, data):
         return self.__init_region_resource_data(region_repo.update_enterprise_region(enterprise_id, region_id, data))
+
+    def delete_enterprise_region(self, enterprise_id, region_id, force=False):
+        if not force:
+            # check region is uesd
+            region = region_repo.get_region_by_id(enterprise_id, region_id)
+            if service_repo.get_service_by_region(enterprise_id, region.region_name).count() > 0:
+                raise ServiceHandleException("have component in this region", "集群中还存在组件", 400, 10050)
+        region_repo.del_by_enterprise_region_id(enterprise_id, region_id)
 
     @transaction.atomic
     def del_by_region_id(self, region_id):
